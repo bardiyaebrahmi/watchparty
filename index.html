@@ -891,7 +891,21 @@ function initPureWebRTC(isHost) {
   localStorage.setItem('wt_user', u);
 
   document.getElementById('webrtc-flow-box').style.display = 'block';
+
   localPeerConnection = new RTCPeerConnection({ iceServers: [] });
+
+  // نمایش وضعیت ICE به کاربر
+  localPeerConnection.onicegatheringstatechange = () => {
+    const s = localPeerConnection.iceGatheringState;
+    if (s === 'gathering') toast('در حال جمع‌آوری اطلاعات اتصال...', 'info');
+    if (s === 'complete')  toast('کد آماده است — کپی کنید ✅', 'success');
+  };
+
+  localPeerConnection.oniceconnectionstatechange = () => {
+    const s = localPeerConnection.iceConnectionState;
+    if (s === 'failed')       toast('اتصال ناموفق بود. دوباره امتحان کنید.', 'error');
+    if (s === 'disconnected') toast('اتصال قطع شد', 'warn');
+  };
 
   if (isHost) {
     document.getElementById('host-steps').style.display = 'block';
@@ -908,15 +922,19 @@ function setupHostChannel() {
   localDataChannel = localPeerConnection.createDataChannel("watchChannel", { negotiated: true, id: 1 });
   bindChannelEvents(localDataChannel);
 
+  // وقتی ICE کامل شد، offer رو نشون بده — نه با setTimeout
+  localPeerConnection.onicegatheringstatechange = () => {
+    if (localPeerConnection.iceGatheringState === 'complete') {
+      document.getElementById('host-offer-output').value =
+        btoa(JSON.stringify(localPeerConnection.localDescription));
+      toast('کد آماده است — کپی کنید ✅', 'success');
+    }
+  };
+
   localPeerConnection.createOffer()
     .then(offer => localPeerConnection.setLocalDescription(offer))
-    .then(() => {
-      setTimeout(() => {
-        document.getElementById('host-offer-output').value = btoa(JSON.stringify(localPeerConnection.localDescription));
-      }, 800);
-    });
+    .catch(e => toast('خطا در ساخت offer: ' + e.message, 'error'));
 }
-
 function setupGuestChannel() {
   localDataChannel = localPeerConnection.createDataChannel("watchChannel", { negotiated: true, id: 1 });
   bindChannelEvents(localDataChannel);
@@ -925,30 +943,52 @@ function setupGuestChannel() {
 function guestCreatesAnswer() {
   const rawOffer = document.getElementById('guest-offer-input').value.trim();
   if (!rawOffer) { toast('باکس کد خالی است!', 'warn'); return; }
+
+  // جلوگیری از double-click
+  if (localPeerConnection.signalingState !== 'stable') {
+    toast('در حال پردازش... صبر کنید', 'warn'); return;
+  }
+
   try {
     const offerDesc = new RTCSessionDescription(JSON.parse(atob(rawOffer)));
+
+    // وقتی ICE کامل شد، answer رو نشون بده
+    localPeerConnection.onicegatheringstatechange = () => {
+      if (localPeerConnection.iceGatheringState === 'complete') {
+        document.getElementById('guest-answer-output').value =
+          btoa(JSON.stringify(localPeerConnection.localDescription));
+        toast('کد پاسخ آماده است — کپی کنید ✅', 'success');
+      }
+    };
+
     localPeerConnection.setRemoteDescription(offerDesc)
       .then(() => localPeerConnection.createAnswer())
       .then(answer => localPeerConnection.setLocalDescription(answer))
-      .then(() => {
-        setTimeout(() => {
-          document.getElementById('guest-answer-output').value = btoa(JSON.stringify(localPeerConnection.localDescription));
-          toast('کد پاسخ ساخته شد!', 'success');
-        }, 800);
-      });
-  } catch (e) { toast('کد نامعتبر است. دوباره کپی کنید.', 'error'); }
-}
+      .catch(e => toast('خطا: ' + e.message, 'error'));
 
+  } catch (e) {
+    toast('کد نامعتبر است. دوباره کپی کنید.', 'error');
+  }
+}
 function hostConnects() {
   const rawAnswer = document.getElementById('host-answer-input').value.trim();
   if (!rawAnswer) { toast('باکس کد پاسخ خالی است!', 'warn'); return; }
+
+  // باید در حالت have-local-offer باشه
+  if (localPeerConnection.signalingState !== 'have-local-offer') {
+    toast('وضعیت اتصال اشتباه است. صفحه را رفرش کنید.', 'error'); return;
+  }
+
   try {
     const answerDesc = new RTCSessionDescription(JSON.parse(atob(rawAnswer)));
-    localPeerConnection.setRemoteDescription(answerDesc).then(() => {
-      toast('اتصال برقرار شد! 🎉', 'success');
-    });
-  } catch (e) { toast('کد پاسخ نامعتبر است.', 'error'); }
+    localPeerConnection.setRemoteDescription(answerDesc)
+      .then(() => toast('در حال برقراری اتصال... ⏳', 'info'))
+      .catch(e => toast('خطا: ' + e.message, 'error'));
+  } catch (e) {
+    toast('کد پاسخ نامعتبر است.', 'error');
+  }
 }
+
 
 function bindChannelEvents(channel) {
   channel.onopen = () => {
